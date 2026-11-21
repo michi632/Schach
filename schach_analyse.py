@@ -547,12 +547,12 @@ def swap_colors(b):
 START = list("rnbqkbnr" + "pppppppp" + "." * 32 + "PPPPPPPP" + "RNBQKBNR")
 
 # ───────────────────────── UI ─────────────────────────
-BG, INK, MUTED = "#F7F7F5", "#1F2328", "#6B7280"
-LIGHT, DARK = "#ECEFF2", "#A9B7C6"
-GREEN, GREEN_L, GREEN_D = "#1E8E5A", "#C6E8D6", "#9AD3B5"
-BLUE = "#2F6FEB"
-RED, RED_L = "#E5484D", "#F6C6C8"
-BLUE, BLUE_L, BLUE_D = "#2F6FED", "#CFDEFB", "#9DBBF7"
+BG, PANEL, BORDER = "#0A1020", "#111B2E", "#263852"
+INK, MUTED = "#E8F1FF", "#8293AE"
+LIGHT, DARK = "#243650", "#142238"
+GREEN, GREEN_L, GREEN_D = "#00E0B0", "#17483F", "#155B58"
+RED, RED_L = "#FF5878", "#512638"
+BLUE, BLUE_L, BLUE_D = "#53C7FF", "#17415C", "#245D7D"
 GLYPH = {'k': '\u265A', 'q': '\u265B', 'r': '\u265C', 'b': '\u265D', 'n': '\u265E', 'p': '\u265F'}
 OUT = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]
 S, M, CELL = 72, 24, 68  # Feldgröße, Rand, Palettenzelle
@@ -599,10 +599,10 @@ class App:
         left = tk.Frame(body, bg=BG)
         left.pack(side="left")
         self.cv = tk.Canvas(left, width=8 * S + 2 * M, height=8 * S + 2 * M,
-                            bg=BG, highlightthickness=0)
+                            bg=BG, highlightthickness=1, highlightbackground=BORDER)
         self.cv.pack()
         self.lbl_best = tk.Label(left, bg=BG, fg=GREEN, font=(self.ui, 15, "bold"), anchor="w")
-        self.lbl_best.pack(fill="x", padx=M, pady=(10, 0))
+        self.lbl_best.pack(fill="x", padx=M, pady=(12, 0))
         self.lbl_mate = tk.Label(left, bg=BG, fg=BLUE, font=(self.ui, 13, "bold"), anchor="w",
                                  justify="left", wraplength=8 * S)
         self.lbl_mate.pack(fill="x", padx=M, pady=(2, 0))
@@ -610,18 +610,22 @@ class App:
                                 justify="left", wraplength=8 * S)
         self.lbl_thr.pack(fill="x", padx=M, pady=(2, 0))
 
-        right = tk.Frame(body, bg=BG)
-        right.pack(side="left", padx=(24, 0), anchor="n", pady=M)
-        tk.Label(right, text="FIGUREN", bg=BG, fg=MUTED, font=(self.ui, 10, "bold")).pack(anchor="w")
-        self.pal = tk.Canvas(right, width=2 * CELL, height=6 * CELL, bg=BG, highlightthickness=0)
+        right = tk.Frame(body, bg=PANEL, highlightbackground=BORDER, highlightthickness=1,
+                         padx=16, pady=16)
+        right.pack(side="left", padx=(20, 0), anchor="n", pady=M)
+        tk.Label(right, text="FIGUREN  /  SETUP", bg=PANEL, fg=BLUE,
+                 font=(self.ui, 10, "bold")).pack(anchor="w")
+        self.pal = tk.Canvas(right, width=2 * CELL, height=6 * CELL,
+                             bg=PANEL, highlightthickness=0)
         self.pal.pack(pady=(6, 12))
         self._button(right, "Brett drehen  ⟲", self.flip_board)
         self.btn_erase = self._button(right, "Entfernen", lambda: self.set_tool('erase'))
         self._button(right, "Grundstellung", lambda: self.load(START[:]))
         self._button(right, "Brett leeren", lambda: self.load(['.'] * 64))
-        tk.Label(right, text="LERNEN", bg=BG, fg=MUTED, font=(self.ui, 10, "bold")).pack(anchor="w", pady=(16, 0))
+        tk.Label(right, text="LERNEN  /  KI", bg=PANEL, fg=BLUE,
+                 font=(self.ui, 10, "bold")).pack(anchor="w", pady=(16, 0))
         self.btn_train = self._button(right, "Matt-Training", self.toggle_train)
-        self.lbl_learn = tk.Label(right, bg=BG, fg=MUTED, font=(self.ui, 10), justify="left",
+        self.lbl_learn = tk.Label(right, bg=PANEL, fg=MUTED, font=(self.ui, 10), justify="left",
                                   anchor="w", wraplength=2 * CELL)
         self.lbl_learn.pack(anchor="w", pady=(6, 0))
 
@@ -642,37 +646,39 @@ class App:
 
     # ── Widgets ──
     def _build_top(self):
-        top = tk.Frame(self.root, bg=BG)
+        top = tk.Frame(self.root, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
         top.pack(fill="x", padx=24, pady=(20, 10))
-        tk.Label(top, text="Bester Zug für", bg=BG, fg=MUTED,
-                 font=(self.ui, 12)).pack(side="left", padx=(0, 10))
+        tk.Label(top, text="ANALYSE  /  ZUG FÜR", bg=PANEL, fg=MUTED,
+                 font=(self.ui, 10, "bold")).pack(side="left", padx=(14, 10), pady=12)
         self.tog = {}
         for key, text in (('w', "Weiß"), ('b', "Schwarz")):
-            l = tk.Label(top, text=text, font=(self.ui, 12, "bold"), padx=18, pady=6, cursor="hand2")
+            l = tk.Label(top, text=text, font=(self.ui, 11, "bold"), padx=16, pady=6, cursor="hand2")
             l.pack(side="left")
             l.bind("<Button-1>", lambda e, k=key: self.set_side(k))
             self.tog[key] = l
         self._style_toggle()
         tk.Checkbutton(top, text="Drohungen anzeigen", variable=self.show_thr, command=self.draw,
-                       bg=BG, activebackground=BG, fg=INK, font=(self.ui, 12),
-                       bd=0, highlightthickness=0, cursor="hand2").pack(side="right")
+                       bg=PANEL, activebackground=PANEL, fg=INK, activeforeground=BLUE,
+                       selectcolor=BG, font=(self.ui, 11),
+                       bd=0, highlightthickness=0, cursor="hand2").pack(side="right", padx=14)
 
     def _button(self, parent, text, cmd):
-        l = tk.Label(parent, text=text, bg="#E7E9EC", fg=INK, font=(self.ui, 12),
+        l = tk.Label(parent, text=text, bg="#1A2940", fg=INK, font=(self.ui, 11, "bold"),
                      width=14, pady=7, cursor="hand2")
         l.pack(pady=3, fill="x")
         l.bind("<Button-1>", lambda e: cmd())
-        l.bind("<Enter>", lambda e: l.configure(bg="#DADDE1") if l is not self.btn_erase or self.tool != 'erase' else None)
-        l.bind("<Leave>", lambda e: self._style_erase() if l is self.btn_erase else l.configure(bg="#E7E9EC"))
+        l.bind("<Enter>", lambda e: l.configure(bg="#263852") if l is not self.btn_erase or self.tool != 'erase' else None)
+        l.bind("<Leave>", lambda e: self._style_erase() if l is self.btn_erase else l.configure(bg="#1A2940"))
         return l
 
     def _style_toggle(self):
         for k, l in self.tog.items():
             on = k == self.side
-            l.configure(bg=INK if on else "#E7E9EC", fg="#FFFFFF" if on else "#555B66")
+            l.configure(bg=GREEN_D if on else PANEL, fg=GREEN if on else MUTED)
 
     def _style_erase(self):
-        self.btn_erase.configure(bg=GREEN_L if self.tool == 'erase' else "#E7E9EC")
+        self.btn_erase.configure(bg=GREEN_D if self.tool == 'erase' else "#1A2940",
+                                 fg=GREEN if self.tool == 'erase' else INK)
 
     # ── Zustand ──
     def set_side(self, k):
@@ -931,10 +937,10 @@ class App:
         ch = GLYPH[p.lower()] + '\ufe0e'
         if p.isupper():
             for dx, dy in OUT:
-                cv.create_text(x + dx, y + dy, text=ch, font=font, fill="#2B2F36", tags=tag)
-            cv.create_text(x, y, text=ch, font=font, fill="#FFFFFF", tags=tag)
+                cv.create_text(x + dx, y + dy, text=ch, font=font, fill="#0A1020", tags=tag)
+            cv.create_text(x, y, text=ch, font=font, fill="#F3F8FF", tags=tag)
         else:
-            cv.create_text(x, y, text=ch, font=font, fill="#23272E", tags=tag)
+            cv.create_text(x, y, text=ch, font=font, fill="#91B4D8", tags=tag)
 
     def draw_palette(self):
         self.pal.delete('all')
@@ -943,8 +949,8 @@ class App:
                 x0, y0 = col * CELL, row * CELL
                 sel = self.tool == p
                 self.pal.create_rectangle(x0 + 3, y0 + 3, x0 + CELL - 3, y0 + CELL - 3,
-                                          fill=GREEN_L if sel else "#E7E9EC",
-                                          outline=GREEN if sel else "#E7E9EC", width=2)
+                                          fill=GREEN_D if sel else "#1A2940",
+                                          outline=GREEN if sel else "#1A2940", width=2)
                 self.glyph(self.pal, x0 + CELL / 2, y0 + CELL / 2, p, self.pf_small)
 
     def _center(self, sq):
