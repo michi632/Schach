@@ -16,6 +16,7 @@ Bedienung
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 import queue
 import random
@@ -100,9 +101,11 @@ def in_check(b, white):
     return k >= 0 and any(True for _ in attackers_iter(b, k, not white))
 
 
-def gen_moves(b, white, caps_only=False):
+def gen_moves(b, white, caps_only=False, chk=None):
     mv = []
     for sq in range(64):
+        if chk and sq & 7 == 0:
+            chk()
         p = b[sq]
         if p == '.' or p.isupper() != white:
             continue
@@ -157,9 +160,11 @@ def make(b, m):
     return nb
 
 
-def legal_moves(b, white):
+def legal_moves(b, white, chk=None):
     out = []
-    for m in gen_moves(b, white):
+    for m in gen_moves(b, white, chk=chk):
+        if chk:
+            chk()
         nb = make(b, m)
         k = king_sq(nb, white)
         if k < 0 or not any(True for _ in attackers_iter(nb, k, not white)):
@@ -215,10 +220,14 @@ class Searcher:
     def __init__(self, deadline, alive):
         self.deadline, self.alive, self.nodes = deadline, alive, 0
 
+    def check(self):
+        if time.time() > self.deadline or not self.alive():
+            raise Timeout
+
     def tick(self):
         self.nodes += 1
-        if self.nodes & 511 == 0 and (time.time() > self.deadline or not self.alive()):
-            raise Timeout
+        if self.nodes & 127 == 0:
+            self.check()
 
     @staticmethod
     def order(b, moves):
@@ -239,7 +248,7 @@ class Searcher:
         if stand >= beta or d == 0:
             return stand
         alpha = max(alpha, stand)
-        for m in self.order(b, gen_moves(b, white, True)):
+        for m in self.order(b, gen_moves(b, white, True, self.check)):
             sc = -self.qs(make(b, m), not white, -beta, -alpha, d - 1)
             if sc >= beta:
                 return sc
@@ -250,11 +259,12 @@ class Searcher:
         if depth == 0:
             return self.qs(b, white, alpha, beta, 4)
         self.tick()
-        moves = legal_moves(b, white)
+        moves = legal_moves(b, white, self.check)
         if not moves:
             return -MATE + ply if in_check(b, white) else 0
         best = -INF
         for m in self.order(b, moves):
+            self.check()
             sc = -self.search(make(b, m), not white, depth - 1, -beta, -alpha, ply + 1)
             best = max(best, sc)
             alpha = max(alpha, sc)
@@ -265,16 +275,17 @@ class Searcher:
 
 def best_move(b, white, alive=lambda: True, limit=2.0, maxd=6):
     """Gibt (zug, score, tiefe) zurück oder None, wenn kein legaler Zug existiert."""
-    moves = legal_moves(b, white)
+    s = Searcher(time.time() + limit, alive)
+    moves = legal_moves(b, white, s.check)
     if not moves:
         return None
-    s = Searcher(time.time() + limit, alive)
     ordered = s.order(b, moves)
     best = (ordered[0], 0, 0)
     for d in range(1, maxd + 1):
         try:
             alpha, cur, cur_sc = -INF, None, -INF
             for m in ordered:
+                s.check()
                 sc = -s.search(make(b, m), not white, d - 1, -INF, -alpha, 1)
                 if sc > cur_sc:
                     cur_sc, cur = sc, m
@@ -312,7 +323,7 @@ def find_threats(b, white):
 
 def opp_mated(b, opp, n, chk):
     """opp ist am Zug: wird er matt, obwohl Gegner noch n Züge hat?"""
-    replies = legal_moves(b, opp)
+    replies = legal_moves(b, opp, chk)
     if not replies:
         return in_check(b, opp)
     if n == 0:
@@ -321,7 +332,7 @@ def opp_mated(b, opp, n, chk):
 
 
 def any_mate(b, white, n, chk):
-    for m in legal_moves(b, white):
+    for m in legal_moves(b, white, chk):
         chk()
         nb = make(b, m)
         if n == 1 and not in_check(nb, not white):  # letzter Zug muss Schach geben
@@ -333,7 +344,7 @@ def any_mate(b, white, n, chk):
 
 def side_mates(b, white, n, chk):
     out = []
-    for m in legal_moves(b, white):
+    for m in legal_moves(b, white, chk):
         chk()
         nb = make(b, m)
         if n == 1 and not in_check(nb, not white):
@@ -374,8 +385,10 @@ MOVER_W = {}  # (Stückart, dr, dc) -> gelernter Bonus; Position relativ zum gem
 MEM_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matt_gedaechtnis.json")
 
 
-def has_legal(b, white):
-    for m in gen_moves(b, white):
+def has_legal(b, white, chk=None):
+    for m in gen_moves(b, white, chk=chk):
+        if chk:
+            chk()
         nb = make(b, m)
         k = king_sq(nb, white)
         if k < 0 or not any(True for _ in attackers_iter(nb, k, not white)):
@@ -383,28 +396,34 @@ def has_legal(b, white):
     return False
 
 
-def is_mated(b, white):
-    return in_check(b, white) and not has_legal(b, white)
+def is_mated(b, white, chk=None):
+    return in_check(b, white) and not has_legal(b, white, chk)
 
 
-def mate_in_1(b, white):
-    for m in legal_moves(b, white):
-        if is_mated(make(b, m), not white):
+def mate_in_1(b, white, chk=None):
+    for m in legal_moves(b, white, chk):
+        if chk:
+            chk()
+        if is_mated(make(b, m), not white, chk):
             return m
     return None
 
 
-def mate_finals(b, white, n, ms, limit=6):
+def mate_finals(b, white, n, ms, limit=6, chk=None):
     """Gematte Endstellungen zu den gefundenen Mattführungen (zum Lernen)."""
     out = []
     for m in ms[:3]:
+        if chk:
+            chk()
         nb = make(b, m)
         if n == 1:
             out.append(nb)
         else:
-            for r in legal_moves(nb, not white):
+            for r in legal_moves(nb, not white, chk):
+                if chk:
+                    chk()
                 nb2 = make(nb, r)
-                m2 = mate_in_1(nb2, white)
+                m2 = mate_in_1(nb2, white, chk)
                 if m2:
                     out.append(make(nb2, m2))
         if len(out) >= limit:
@@ -479,6 +498,9 @@ class MateMemory:
             t, dr, dc = key.split(",")
             MOVER_W[(t, int(dr), int(dc))] = min(n, 10) * 2
 
+    def summary(self):
+        return {"matts": self.d["matts"], "patterns": self.d["patterns"].copy()}
+
     def _save(self):
         self.d["seen"] = self.d["seen"][-3000:]
         try:
@@ -515,9 +537,11 @@ class MateMemory:
         return True
 
 
-def random_endgame():
+def random_endgame(chk=None):
     """Zufälliges Endspiel für das Selbsttraining (Weiß am Zug, klar im Vorteil)."""
     while True:
+        if chk:
+            chk()
         wset = ['K'] + random.sample(['Q', 'R', 'R', 'B', 'N', 'P'], random.randint(1, 3))
         if not any(p in 'QR' for p in wset):
             wset[1] = 'Q'
@@ -542,6 +566,158 @@ def swap_colors(b):
         if p != '.':
             nb[(7 - (sq >> 3)) * 8 + (sq & 7)] = p.swapcase()
     return nb
+
+
+def _engine_worker(commands, results, generation):
+    memory = MateMemory()
+    results.put(("memory", 0, memory.summary()))
+
+    while True:
+        command = commands.get()
+        if command[0] == "stop":
+            return
+        kind, job = command[:2]
+        if generation.value != job:
+            continue
+
+        alive = lambda: generation.value == job
+
+        def chk():
+            if not alive():
+                raise Timeout
+
+        try:
+            if kind == "analyze":
+                _, _, board, white = command
+                board = list(board)
+                for color in (True, False):
+                    chk()
+                    memory.learn(board, color)
+
+                deadline = time.time() + 4
+
+                def mate_check():
+                    chk()
+                    if time.time() > deadline:
+                        raise Timeout
+
+                try:
+                    mate = find_mates(board, white, mate_check)
+                except Timeout:
+                    if not alive():
+                        continue
+                    mate = None
+                name, finals = None, []
+                if mate:
+                    try:
+                        finals = mate_finals(board, white, *mate, chk=mate_check)
+                    except Timeout:
+                        if not alive():
+                            continue
+                        finals = []
+                    if finals:
+                        final = finals[0]
+                        k = king_sq(final, not white)
+                        name = classify(final, k, not white, attackers(final, k, white))
+                        for final in finals:
+                            mate_check()
+                            memory.learn(final, not white)
+                try:
+                    best = best_move(board, white, alive=alive)
+                except Timeout:
+                    if not alive():
+                        continue
+                    best = None
+                if alive():
+                    info = (name, memory.d["patterns"].get(name, 0)) if name else None
+                    results.put(("analysis", job, mate, info, best, memory.summary()))
+            elif kind == "training":
+                games = 0
+                while alive():
+                    board, white = random_endgame(chk), True
+                    if random.random() < 0.5:
+                        board, white = swap_colors(board), False
+                    for _ in range(80):
+                        chk()
+                        if all(piece in 'Kk.' for piece in board):
+                            break
+                        result = best_move(board, white, alive=alive, limit=0.12, maxd=4)
+                        chk()
+                        if result is None:
+                            if is_mated(board, white, chk):
+                                memory.learn(board, white)
+                            break
+                        board, white = make(board, result[0]), not white
+                    games += 1
+                    results.put(("training", job, games, memory.summary()))
+        except Timeout:
+            continue
+        except Exception as exc:
+            if alive():
+                results.put(("error", job, f"{type(exc).__name__}: {exc}"))
+
+
+class EngineWorker:
+    def __init__(self):
+        context = multiprocessing.get_context("spawn")
+        self.commands = context.Queue()
+        self.results = context.Queue()
+        self.generation = context.Value("q", 0)
+        self.process = context.Process(
+            target=_engine_worker,
+            args=(self.commands, self.results, self.generation),
+            name="chess-engine",
+            daemon=True,
+        )
+        self.process.start()
+        self.closed = False
+
+    def _next_generation(self):
+        with self.generation.get_lock():
+            self.generation.value += 1
+            return self.generation.value
+
+    def invalidate(self):
+        return self._next_generation()
+
+    def analyze(self, board, white):
+        if self.closed or not self.process.is_alive():
+            raise RuntimeError("Analyse-Worker nicht verfügbar")
+        job = self._next_generation()
+        self.commands.put(("analyze", job, tuple(board), white))
+        return job
+
+    def train(self):
+        if self.closed or not self.process.is_alive():
+            raise RuntimeError("Analyse-Worker nicht verfügbar")
+        job = self._next_generation()
+        self.commands.put(("training", job))
+        return job
+
+    def poll(self):
+        while True:
+            try:
+                message = self.results.get_nowait()
+            except queue.Empty:
+                return None
+            if message[0] == "memory" or message[1] == self.generation.value:
+                return message
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self._next_generation()
+        if self.process.is_alive():
+            self.commands.put(("stop",))
+            self.process.join(timeout=1)
+            if self.process.is_alive():
+                self.process.terminate()
+                self.process.join(timeout=1)
+        self.commands.cancel_join_thread()
+        self.results.cancel_join_thread()
+        self.commands.close()
+        self.results.close()
 
 
 START = list("rnbqkbnr" + "pppppppp" + "." * 32 + "PPPPPPPP" + "RNBQKBNR")
@@ -584,13 +760,12 @@ class App:
         self.best = None
         self.mate = None
         self.job = 0
-        self.q = queue.Queue()
+        self.worker = EngineWorker()
+        self.memory_stats = {"matts": 0, "patterns": {}}
+        self.worker_error_shown = False
         self.show_thr = tk.BooleanVar(value=False)
-        self.mem = MateMemory()
-        self.mate = None
         self.training = False
         self.train_txt = ""
-        self.tq = queue.Queue()
 
         self._build_top()
         body = tk.Frame(root, bg=BG)
@@ -640,6 +815,7 @@ class App:
 
         root.bind("<f>", lambda e: self.flip_board())
         root.bind("<F>", lambda e: self.flip_board())
+        root.protocol("WM_DELETE_WINDOW", self.close)
         self.draw_palette()
         self.refresh()
         self.poll()
@@ -814,60 +990,56 @@ class App:
 
     # ── Analyse ──
     def refresh(self):
-        self.job += 1
+        if self.training:
+            self.training = False
+            self.train_txt = ""
+            self.btn_train.configure(text="Matt-Training", fg=INK)
         self.best = self.mate = None
         self.lbl_mate.configure(text="")
-        for w in (True, False):  # steht ein Matt auf dem Brett? -> daraus lernen
-            self.mem.learn(self.b, w)
         self.update_learn()
         self.lbl_best.configure(text="Berechne …", fg=MUTED)
         self.draw()
-        job, b, white = self.job, self.b[:], self.side == 'w'
-        threading.Thread(target=self._work, args=(job, b, white), daemon=True).start()
-
-    def _work(self, job, b, white):
-        alive = lambda: job == self.job
-        deadline = time.time() + 4
-
-        def chk():
-            if not alive() or time.time() > deadline:
-                raise Timeout
         try:
-            mate = find_mates(b, white, chk)
-        except Timeout:
-            mate = None
-        info = None
-        if mate:  # Muster benennen und aus den Matt-Endstellungen lernen
-            finals = mate_finals(b, white, *mate)
-            if finals:
-                f0 = finals[0]
-                k = king_sq(f0, not white)
-                name = classify(f0, k, not white, attackers(f0, k, white))
-                info = (name, self.mem.d["patterns"].get(name, 0))
-                for f in finals:
-                    self.mem.learn(f, not white)
-        self.q.put((job, 'mate', (mate, info)))
-        self.q.put((job, 'best', best_move(b, white, alive=alive)))
+            self.job = self.worker.analyze(self.b[:], self.side == 'w')
+        except RuntimeError as exc:
+            self.job = self.worker.invalidate()
+            self.worker_error_shown = True
+            self.lbl_best.configure(text=f"Analyse fehlgeschlagen: {exc}", fg=RED)
 
     def poll(self):
-        try:
-            while True:
-                job, kind, data = self.q.get_nowait()
-                if job != self.job:
-                    continue
-                if kind == 'mate':
-                    self.show_mate(*data)
-                else:
-                    self.show_result(data)
-        except queue.Empty:
-            pass
-        try:
-            while True:
-                self.train_txt = self.tq.get_nowait()
-                self.update_learn()
-        except queue.Empty:
-            pass
-        self.root.after(80, self.poll)
+        while True:
+            message = self.worker.poll()
+            if message is None:
+                break
+            self._handle_worker_message(message)
+        if not self.worker.process.is_alive() and not self.worker_error_shown:
+            self.worker_error_shown = True
+            self.lbl_best.configure(text="Analyse-Worker beendet", fg=RED)
+        if not self.worker.closed:
+            self.root.after(80, self.poll)
+
+    def _handle_worker_message(self, message):
+        kind, job, *data = message
+        if kind == "memory":
+            self.memory_stats = data[0]
+            self.update_learn()
+            return
+        if job != self.job:
+            return
+        if kind == "analysis":
+            mate, info, result, self.memory_stats = data
+            self.show_mate(mate, info)
+            self.show_result(result)
+        elif kind == "training":
+            games, self.memory_stats = data
+            self.train_txt = f"Training: {games} Partien"
+            self.update_learn()
+        elif kind == "error":
+            self.training = False
+            self.train_txt = ""
+            self.btn_train.configure(text="Matt-Training", fg=INK)
+            self.lbl_best.configure(text=f"Analyse fehlgeschlagen: {data[0]}", fg=RED)
+            self.update_learn()
 
     def show_mate(self, mate, info):
         self.mate = mate
@@ -895,7 +1067,7 @@ class App:
         self.draw()
 
     def update_learn(self):
-        n, pats = self.mem.d["matts"], self.mem.d["patterns"]
+        n, pats = self.memory_stats["matts"], self.memory_stats["patterns"]
         if n:
             top, cnt = max(pats.items(), key=lambda kv: kv[1])
             txt = f"Gelernt: {n} Matts\nHäufigstes: {top} ({cnt}×)"
@@ -911,26 +1083,22 @@ class App:
                                  fg=RED if self.training else INK)
         if self.training:
             self.train_txt = "Training läuft …"
-            threading.Thread(target=self._train, daemon=True).start()
+            try:
+                self.job = self.worker.train()
+                self.lbl_best.configure(text="Matt-Training läuft …", fg=MUTED)
+            except RuntimeError as exc:
+                self.training = False
+                self.job = self.worker.invalidate()
+                self.btn_train.configure(text="Matt-Training", fg=INK)
+                self.lbl_best.configure(text=f"Training fehlgeschlagen: {exc}", fg=RED)
+        else:
+            self.train_txt = ""
+            self.refresh()
         self.update_learn()
 
-    def _train(self):
-        """Selbstspiel: Engine spielt zufällige Endspiele und lernt aus jedem Matt."""
-        games = 0
-        while self.training:
-            b, white = random_endgame(), True
-            if random.random() < 0.5:
-                b, white = swap_colors(b), False
-            for _ in range(80):
-                if not self.training or all(p in 'Kk.' for p in b):
-                    break
-                res = best_move(b, white, lambda: self.training, limit=0.12, maxd=4)
-                if res is None:
-                    self.mem.learn(b, white)
-                    break
-                b, white = make(b, res[0]), not white
-            games += 1
-            self.tq.put(f"Training: {games} Partien")
+    def close(self):
+        self.worker.close()
+        self.root.destroy()
 
     # ── Zeichnen ──
     def glyph(self, cv, x, y, p, font, tag=''):
